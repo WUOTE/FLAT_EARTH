@@ -1,0 +1,13 @@
+<!-- Extra SOURCE coverage, not the visible zoom. shader_patch.lua crops this
+     at a fixed 427/960 scale. 542 includes the native two-row border. Register only after all source-dependent shaders were prepared. -->
+<!-- Damage font default 2, compensated by the fixed 427/960 view crop.
+     This does not change damage values, the font asset, or HUD font scales. -->
+<MagicNumbers
+    VIRTUAL_RESOLUTION_X="960"
+    VIRTUAL_RESOLUTION_Y="542"
+    GRID_RENDER_BORDER="2"
+    VIRTUAL_RESOLUTION_OFFSET_X="-2"
+    VIRTUAL_RESOLUTION_OFFSET_Y="-1"
+    STREAMING_CHUNK_TARGET="16"
+    REPORT_DAMAGE_SCALE="0.889583333333"
+/>

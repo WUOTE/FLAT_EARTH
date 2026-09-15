@@ -1,0 +1,4 @@
+<Entity name="FLAT EARTH input receiver" tags="flat_earth_input_receiver" serialize="0">
+  <!-- Native input only: no player tag, shooter, inventory, body, sprite or light. -->
+  <ControlsComponent enabled="1" gamepad_indirect_aiming_enabled="0" gamepad_fire_on_thumbstick_extend="0" />
+</Entity>
