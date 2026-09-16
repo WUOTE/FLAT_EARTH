@@ -3,10 +3,10 @@
 -- is cropped at a fixed scale, so camera tilt never changes visible zoom.
 -- Embedded in Lua: no unsupported .glsl asset for Noita's VFS to silently omit.
 local M = {}
-local marker = "// FLAT_EARTH_FRAGMENT_V4"
+local marker = "// FLAT_EARTH_FRAGMENT_V5"
 
 local declarations = [[
-// FLAT_EARTH_FRAGMENT_V4
+// FLAT_EARTH_FRAGMENT_V5
 uniform vec4 FLAT_EARTH_rotation;
 
 // Each source varying can use a DIFFERENT texture rectangle/scale. Its screen
@@ -55,6 +55,17 @@ local function replace_once(source, needle, replacement)
     return source:sub(1, first - 1) .. replacement .. source:sub(last + 1)
 end
 
+local function replace_pattern(source, pattern, replacement, label)
+    local count
+    source, count = source:gsub(pattern, function()
+        return replacement
+    end)
+    if count ~= 1 then
+        return nil, "missing/ambiguous shader constant: " .. label
+    end
+    return source
+end
+
 function M.build(fragment, render_scale, world_scale)
     render_scale = tonumber(render_scale or 1)
     if not render_scale or not (render_scale > 0 and render_scale <= 1) then
@@ -76,7 +87,7 @@ function M.build(fragment, render_scale, world_scale)
         return nil, "coverage changed while shader was loaded; fully restart Noita"
     end
     if fragment:find("// FLAT_EARTH_BEGIN", 1, true) or fragment:find("// FLAT_EARTH_FRAGMENT_V2", 1, true) or
-        fragment:find("// FLAT_EARTH_FRAGMENT_V3", 1, true) then
+        fragment:find("// FLAT_EARTH_FRAGMENT_V3", 1, true) or fragment:find("// FLAT_EARTH_FRAGMENT_V4", 1, true) then
         return nil, "old shader still loaded; fully restart Noita after updating the mod"
     end
     local first, last = fragment:find("void%s+main%s*%(%s*%)%s*{")
@@ -88,6 +99,20 @@ function M.build(fragment, render_scale, world_scale)
     end
     local prefix, body = fragment:sub(1, first - 1), fragment:sub(last + 1)
     local err
+    -- Liquid refraction is defined in texture UV units. On the larger source
+    -- buffer that wobble becomes SC_WORLD_SCALE times bigger on screen and the
+    -- wave that much longer, pulling samples across the liquid edge into the
+    -- surrounding terrain. Keep the vanilla amplitude/wavelength in pixels.
+    body, err = replace_pattern(body, "DISTORTION_SCALE_MULT%s*=%s*50%.0%s*;",
+        "DISTORTION_SCALE_MULT = 50.0 * SC_WORLD_SCALE;", "DISTORTION_SCALE_MULT")
+    if not body then
+        return nil, err
+    end
+    body, err = replace_pattern(body, "DISTORTION_SCALE_MULT2%s*=%s*0%.002%s*;",
+        "DISTORTION_SCALE_MULT2 = 0.002 * SC_RENDER_SCALE;", "DISTORTION_SCALE_MULT2")
+    if not body then
+        return nil, err
+    end
     local replacements = { -- Dithering and damage/health vignettes stay in screen space. At zero
     -- rotation and native coverage sc_uv_shift is zero (stock image).
     {"tex_coord * noise_scale + noise_time", "sc_screen_uv * noise_scale + noise_time"},

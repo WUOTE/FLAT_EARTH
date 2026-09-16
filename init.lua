@@ -1,9 +1,13 @@
 local mod_path = "mods/FLAT_EARTH/"
 local geometry = dofile_once(mod_path .. "files/camera_math.lua")
+local smoothing = dofile_once(mod_path .. "files/smoothing.lua")
 local terrain = dofile_once(mod_path .. "files/terrain.lua")
 local render_pipeline = dofile_once(mod_path .. "files/render_pipeline.lua")
 local player_pose = dofile_once(mod_path .. "files/player_pose.lua")
 local input = dofile_once(mod_path .. "files/late_aim.lua")
+local status_visuals = dofile_once(mod_path .. "files/status_visuals.lua")
+-- Native messages stay native. The overlay in files/recharge_text.lua is kept
+-- for future custom UI, but this mod no longer loads or feeds messages to it.
 
 local state = {
     ready = false,
@@ -43,8 +47,8 @@ local function options()
         state.options_cache = {
             enabled = setting("enabled", true) == true,
             follow_airborne = setting("follow_airborne", false) == true,
-            max_angle = geometry.clamp(tonumber(setting("max_angle", 75)) or 75, 15, 90) * math.pi / 180,
-            smoothing = geometry.clamp(tonumber(setting("smoothing", 0.14)) or 0.14, 0, 0.6),
+            max_angle = geometry.clamp(tonumber(setting("max_angle", 90)) or 90, 15, 90) * math.pi / 180,
+            smoothing = smoothing.clamp(setting("smoothing", smoothing.default)),
             locked = false
         }
     end
@@ -101,6 +105,7 @@ local function publish(player, angle)
 end
 
 local function release_camera()
+    status_visuals.restore()
     input.release()
     GlobalsSetValue("FLAT_EARTH.active_player", "0")
     player_pose.restore()
@@ -167,8 +172,8 @@ function OnPlayerSpawned(player)
         end
         return
     end
-    -- On a real spawn, repair old saved versions once and release a restored
-    -- entity's serialized lease before any receiver/control rebinding.
+    -- Release only a restored entity's serialized lease before rebinding.
+    -- Never guess that unmarked, disabled controls belong to this mod.
     local active_creature = false
     if EntityHasTag(player, "player_unit") and not EntityHasTag(player, "polymorphed_player") then
         for _, entity in ipairs(EntityGetWithTag("polymorphed_player") or {}) do
@@ -181,8 +186,9 @@ function OnPlayerSpawned(player)
     if active_creature then
         return
     end
-    input.recover_legacy_spawn(player)
     input.recover(player)
+    status_visuals.restore()
+    status_visuals.recover(player)
     state.player = player
     input.attach(player)
     local x, y = EntityGetTransform(player)
@@ -205,7 +211,9 @@ function OnWorldPreUpdate()
     if player ~= state.player then
         OnPlayerSpawned(player)
     end
-    player_pose.apply(player, state.tracker.angle, setting("upright_player", true))
+    local upright = setting("upright_player", true)
+    local native_pose_offset = player_pose.prepare(player, state.tracker.angle, upright)
+    status_visuals.prepare(player, state.tracker.angle, native_pose_offset, upright)
     GameSetCameraFree(true)
     -- Prepare corrected input before native movement, hand/wand aiming and casting.
     input.prepare(player)
@@ -217,6 +225,7 @@ function OnWorldPostUpdate()
     end
     input.capture_input(state.player)
     input.restore()
+    status_visuals.restore()
     publish_aim_mode()
     local player = find_player()
     if not player then
@@ -243,6 +252,7 @@ function OnPausedChanged(is_paused, is_inventory_pause)
     end
     refresh_settings()
     if is_paused then
+        status_visuals.restore()
         input.restore();
         input.invalidate_input()
     end
@@ -257,6 +267,7 @@ function OnPausedChanged(is_paused, is_inventory_pause)
 end
 
 function OnModSettingsChanged()
+    status_visuals.restore()
     refresh_settings()
     terrain.reset()
     publish_aim_mode()

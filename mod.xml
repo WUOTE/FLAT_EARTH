@@ -1,9 +1,9 @@
 <Mod
      name="FLAT EARTH"
-     description="FINALLY WE HAVE A PROOF"
+     description="FINALLY WE HAVE PROOF"
      tags="gameplay,graphics,funny,quality of life"
-	dont_upload_folders=""
-	dont_upload_files=""
+	dont_upload_folders=".git"
+	dont_upload_files=".gitignore"
 	request_no_api_restrictions="0"
 	> 
 </Mod>

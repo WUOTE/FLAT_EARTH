@@ -1,6 +1,37 @@
 dofile("data/scripts/lib/mod_settings.lua")
 local mod_id = "FLAT_EARTH"
-mod_settings_version = 9
+local smoothing = dofile("mods/FLAT_EARTH/files/smoothing.lua")
+
+local function smoothing_slider(id, gui, in_main_menu, im_id, setting)
+    local key = mod_setting_get_id(id, setting)
+    local value = smoothing.clamp(ModSettingGetNextValue(key))
+    GuiIdPushString(gui, key)
+    GuiText(gui, mod_setting_group_x_offset, 0, setting.ui_name .. string.format(": %.0f ms", value * 1000))
+    mod_setting_tooltip(id, gui, in_main_menu, setting)
+    GuiLayoutBeginHorizontal(gui, mod_setting_group_x_offset, 0, true)
+    local less = GuiButton(gui, 1, 0, 0, "-10 ms")
+    -- Logarithmic travel gives fast response times more room than a linear
+    -- 0..2 s slider. Drag values snap to 10 ms; buttons reach every step.
+    local previous_position = smoothing.to_slider(value)
+    local position = GuiSlider(gui, 2, 0, 0, "", previous_position, 0, smoothing.slider_max,
+        smoothing.to_slider(setting.value_default), 1, " ", 180)
+    local more = GuiButton(gui, 3, 0, 0, "+10 ms")
+    GuiLayoutEnd(gui)
+    GuiIdPop(gui)
+    local new_value = value
+    -- GuiSlider returns float32: do not mistake round-off for a user edit and
+    -- silently snap an older off-grid saved value just by opening the menu.
+    if math.abs(position - previous_position) > 0.001 then
+        new_value = smoothing.from_slider(position)
+    end
+    if less then new_value = smoothing.adjust(new_value, -1) end
+    if more then new_value = smoothing.adjust(new_value, 1) end
+    if math.abs(new_value - value) > 0.0000001 then
+        ModSettingSetNextValue(key, new_value, false)
+        mod_setting_handle_change_callback(id, gui, in_main_menu, setting, value, new_value)
+    end
+end
+mod_settings_version = 12
 mod_settings = {{
     id = "enabled",
     ui_name = "Rotate to match the ground",
@@ -11,21 +42,21 @@ mod_settings = {{
     id = "upright_player",
     ui_name = "Keep the player upright",
     value_default = true,
-    ui_description = "Counter-rotate the normal player by the camera angle. Does not change gravity or projectile velocity. Animal polymorphs retain their normal orientation.",
+    ui_description = "Counter-rotate the player and polymorphed forms visually by the camera angle. Creature turning and controls stay native; gravity and projectile velocity are unchanged.",
     scope = MOD_SETTING_SCOPE_RUNTIME
 }, {
     id = "smoothing",
     ui_name = "Rotation smoothing",
-    value_default = 0.14,
-    value_min = 0,
-    value_max = 0.6,
-    value_display_formatting = " $0 s",
-    ui_description = "Lower values follow slopes faster. Zero snaps exactly to the measured slope.",
+    value_default = smoothing.default,
+    value_min = smoothing.min,
+    value_max = smoothing.max,
+    ui_fn = smoothing_slider,
+    ui_description = "0 to 2 seconds, adjustable in 10 ms steps. Lower values follow slopes faster; zero snaps to the measured slope. The slider gives faster settings more precision. Right-click the slider to reset to 200 ms.",
     scope = MOD_SETTING_SCOPE_RUNTIME
 }, {
     id = "max_angle",
     ui_name = "Maximum tilt",
-    value_default = 75,
+    value_default = 90,
     value_min = 15,
     value_max = 90,
     value_display_formatting = " $0 degrees",
@@ -41,7 +72,7 @@ mod_settings = {{
     id = "correct_aim",
     ui_name = "Compensate aiming",
     value_default = true,
-    ui_description = "Keep mouse aiming aligned with the rotated world. Keyboard and mouse only. Buttons are relayed with one simulation frame of latency while a wand is held.",
+    ui_description = "Keep mouse aiming aligned with the rotated world. Keyboard and mouse only. Buttons are relayed with one simulation frame of latency while a wand is held. Temporarily yields to native input during stun, confusion and action locks.",
     scope = MOD_SETTING_SCOPE_RUNTIME
 }, {
     id = "extra_coverage",

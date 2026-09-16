@@ -4,6 +4,8 @@
 -- on the real player. No second shooter, camera spoofing, or projectile edits.
 local aim = dofile_once("mods/FLAT_EARTH/files/aim.lua")
 local pose = dofile_once("mods/FLAT_EARTH/files/player_pose.lua")
+local status_visuals = dofile_once("mods/FLAT_EARTH/files/status_visuals.lua")
+local guard = dofile_once("mods/FLAT_EARTH/files/input_guard.lua")
 local M = {}
 local prefix = "FLAT_EARTH.late_"
 local receiver, receiver_controls, receiver_owner, packet
@@ -26,9 +28,8 @@ end
 frame_fields[#frame_fields + 1] = "mButtonLastFrameFire"
 scalar_fields[#scalar_fields + 1] = "mButtonCountChangeItemR"
 scalar_fields[#scalar_fields + 1] = "mButtonCountChangeItemL"
-for _, button in ipairs({"Fire", "Fire2", "Right", "Left", "Up", "Down", "Kick", "Throw", "Jump", "Fly"}) do
-    scalar_fields[#scalar_fields + 1] = "mButtonDownDelayLine" .. button
-end
+-- mButtonDownDelayLine* belongs to the real player's status-effect system.
+-- Never copy the healthy receiver's history over it.
 local raw_vectors = {"mMousePositionRaw", "mMousePositionRawPrev", "mMouseDelta"}
 
 local function normal_player(player)
@@ -84,44 +85,8 @@ function M.recover(player)
     return true
 end
 
--- Migration for the reported saved player from BEFORE the serializable lease
--- existed. Only called on the first normal player spawn, never to discover NPCs
--- or override controls later disabled by some other system.
-function M.recover_legacy_spawn(player)
-    if not normal_player(player) then
-        return false
-    end
-    if GlobalsGetValue("FLAT_EARTH.input_lifecycle_version", "") ~= "" then
-        return false
-    end
-    GlobalsSetValue("FLAT_EARTH.input_lifecycle_version", "1")
-    local controls = EntityGetFirstComponent(player, "ControlsComponent")
-    if not controls or ComponentGetValue2(controls, "enabled") ~= false then
-        return false
-    end
-    if lease_for(player, false) then
-        return false
-    end
-    if not EntityGetFirstComponent(player, "PlatformShooterPlayerComponent") then
-        return false
-    end
-    if (tonumber(GlobalsGetValue(prefix .. "frame", "-1")) or -1) < 0 then
-        return false
-    end
-    if GlobalsGetValue("FLAT_EARTH.view_scale", "") == "" then
-        return false
-    end
-    ComponentSetValue2(controls, "enabled", true)
-    -- Old snapshots also retained the display-only body angle under a new ID.
-    -- The legacy repair is restricted to the normal player, whose native
-    -- orientation is zero unless we already have an explicit saved baseline.
-    local value = tonumber(GlobalsGetValue("FLAT_EARTH.native_player_rotation_" .. tostring(player), "")) or 0
-    GlobalsSetValue("FLAT_EARTH.native_player_rotation_" .. tostring(player), tostring(value))
-    local x, y, _, sx, sy = EntityGetTransform(player)
-    EntitySetTransform(player, x, y, value, sx or 1, sy or 1)
-    packet = nil
-    return true
-end
+-- Old, unmarked disabled controls are deliberately not "repaired". Without
+-- our serialized lease there is no proof that FLAT EARTH disabled them.
 
 function M.transition_pending(player)
     if tonumber(GlobalsGetValue("FLAT_EARTH.polymorph_source", "0")) ~= player then
@@ -134,7 +99,8 @@ end
 -- Event-only hook. Release BEFORE serialization where the native callback
 -- permits it; the serialized lease above remains the fallback if it does not.
 function M.before_polymorph(player)
-    if not normal_player(player) then
+    if not player or not EntityGetIsAlive(player) or
+        (not EntityHasTag(player, "player_unit") and not EntityHasTag(player, "polymorphed_player")) then
         return
     end
     GlobalsSetValue("FLAT_EARTH.polymorph_source", tostring(player))
@@ -144,6 +110,8 @@ function M.before_polymorph(player)
     end
     M.recover(player)
     pose.restore_entity(player)
+    status_visuals.restore()
+    status_visuals.recover(player)
     packet = nil
 end
 
@@ -208,10 +176,10 @@ function M.attach(player)
             old = EntityGetFirstComponentIncludingDisabled(player, "LuaComponent", tag)
         end
     end
-    if not normal_player(player) then
+    if not EntityGetIsAlive(player) or
+        (not EntityHasTag(player, "player_unit") and not EntityHasTag(player, "polymorphed_player")) then
         return
     end
-    lease_for(player, true)
     local hook = EntityGetFirstComponentIncludingDisabled(player, "LuaComponent", "flat_earth_polymorph_guard")
     if not hook then
         EntityAddComponent2(player, "LuaComponent", {
@@ -220,6 +188,8 @@ function M.attach(player)
             execute_every_n_frame = -1
         })
     end
+    if not normal_player(player) then return end -- creature controls stay native
+    lease_for(player, true)
     local x, y = EntityGetTransform(player)
     receiver = EntityLoad("mods/FLAT_EARTH/files/input_receiver.xml", x, y)
     if receiver == 0 then
@@ -330,14 +300,28 @@ function M.tick(player)
     if not controls then
         return nil, "no ControlsComponent"
     end
-    if ComponentGetValue2(controls, "enabled") == false then
-        return nil, "controls disabled"
+    local restriction = guard.reason(player, controls)
+    if restriction then
+        packet = nil -- do not replay a pre-stun fire/throw edge after recovery
+        return nil, restriction
     end
     local inventory = EntityGetFirstComponent(player, "Inventory2Component")
     if not inventory then
         return nil, "no Inventory2Component"
     end
+    -- Throwing is a native animation-driven action. It can still be in flight
+    -- after the selected item has changed back to a wand (mThrowItem keeps the
+    -- original item). Do not take over controls/force-fire during that action.
+    if (ComponentGetValue2(inventory, "mThrowItem") or 0) ~= 0 then
+        packet = nil
+        return nil, "native throw in progress"
+    end
     local wand = ComponentGetValue2(inventory, "mActiveItem")
+    local actual_item = ComponentGetValue2(inventory, "mActualActiveItem")
+    if actual_item ~= nil and actual_item ~= wand then
+        packet = nil
+        return nil, "native item switch"
+    end
     if not wand or wand == 0 then
         return nil, "no held item"
     end
@@ -351,8 +335,13 @@ function M.tick(player)
     if not ability then
         return nil, "no held AbilityComponent"
     end
-    if ComponentGetValue2(ability, "use_gun_script") ~= true then
-        return nil, "held item is not a wand"
+    -- Flasks and other throwables must keep native polling, right-click
+    -- handling and throw animation. Gun-script metadata alone is not enough
+    -- to distinguish a wand from a throwable supplied/modified by another mod.
+    if ComponentGetValue2(ability, "throw_as_item") == true or
+        ComponentGetValue2(ability, "use_gun_script") ~= true then
+        packet = nil
+        return nil, "native held item controls"
     end
     if receiver_owner ~= player or not receiver or not EntityGetIsAlive(receiver) then
         M.attach(player)
@@ -368,17 +357,17 @@ function M.tick(player)
     -- EZMouse also uses this API for world coordinates. Do NOT substitute the
     -- GUI-scaled pixel coordinates or a previously corrected Controls vector.
     local mx, my = DEBUG_GetMouseWorld()
-    forward_input(controls, frame)
-    GlobalsSetValue(prefix .. "player", tostring(player))
-    GlobalsSetValue(prefix .. "controls", tostring(controls))
     local owned = lease_for(player, true)
     if not owned then
         return nil, "input ownership marker unavailable"
     end
+    GlobalsSetValue(prefix .. "player", tostring(player))
+    GlobalsSetValue(prefix .. "controls", tostring(controls))
     ComponentSetValue2(owned, "value_int", controls)
     ComponentSetValue2(owned, "value_string", "")
     ComponentSetValue2(owned, "value_bool", true)
     ComponentSetValue2(controls, "enabled", false)
+    forward_input(controls, frame)
     local record = aim.apply(player, cx, cy, angle, scale, true, 0, mx, my, true)
     if not record then
         M.restore();
