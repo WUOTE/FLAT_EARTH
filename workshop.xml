@@ -2,7 +2,7 @@
      name="FLAT EARTH"
      description="FINALLY WE HAVE PROOF"
      tags="gameplay,graphics,funny,quality of life"
-	dont_upload_folders=".git"
+	dont_upload_folders=".git,tests"
 	dont_upload_files=".gitignore"
 	request_no_api_restrictions="0"
 	> 

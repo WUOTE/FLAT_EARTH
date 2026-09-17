@@ -6,6 +6,7 @@ local render_pipeline = dofile_once(mod_path .. "files/render_pipeline.lua")
 local player_pose = dofile_once(mod_path .. "files/player_pose.lua")
 local input = dofile_once(mod_path .. "files/late_aim.lua")
 local status_visuals = dofile_once(mod_path .. "files/status_visuals.lua")
+local overhead_icons = dofile_once(mod_path .. "files/overhead_icons.lua")
 -- Native messages stay native. The overlay in files/recharge_text.lua is kept
 -- for future custom UI, but this mod no longer loads or feeds messages to it.
 
@@ -105,6 +106,7 @@ local function publish(player, angle)
 end
 
 local function release_camera()
+    overhead_icons.clear()
     status_visuals.restore()
     input.release()
     GlobalsSetValue("FLAT_EARTH.active_player", "0")
@@ -160,6 +162,9 @@ function OnModPostInit()
     if extra_coverage then
         ModMagicNumbersFileAdd(bounds_path)
     end
+    if setting("rotate_status_indicators", true) then
+        overhead_icons.install()
+    end
     state.ready = true
 end
 
@@ -189,6 +194,8 @@ function OnPlayerSpawned(player)
     input.recover(player)
     status_visuals.restore()
     status_visuals.recover(player)
+    overhead_icons.clear()
+    overhead_icons.recover(player)
     state.player = player
     input.attach(player)
     local x, y = EntityGetTransform(player)
@@ -214,6 +221,7 @@ function OnWorldPreUpdate()
     local upright = setting("upright_player", true)
     local native_pose_offset = player_pose.prepare(player, state.tracker.angle, upright)
     status_visuals.prepare(player, state.tracker.angle, native_pose_offset, upright)
+    overhead_icons.prepare(player)
     GameSetCameraFree(true)
     -- Prepare corrected input before native movement, hand/wand aiming and casting.
     input.prepare(player)
@@ -223,6 +231,7 @@ function OnWorldPostUpdate()
     if not state.ready then
         return
     end
+    overhead_icons.restore()
     input.capture_input(state.player)
     input.restore()
     status_visuals.restore()
@@ -244,6 +253,7 @@ function OnWorldPostUpdate()
     local angle = geometry.update_tracker(state.tracker, x, y, frame, grounded, ground_angle, opts)
     player_pose.apply(player, angle, setting("upright_player", true))
     publish(player, angle)
+    overhead_icons.update(player, angle, state.view_scale, setting("upright_player", true))
 end
 
 function OnPausedChanged(is_paused, is_inventory_pause)
@@ -252,6 +262,7 @@ function OnPausedChanged(is_paused, is_inventory_pause)
     end
     refresh_settings()
     if is_paused then
+        overhead_icons.clear()
         status_visuals.restore()
         input.restore();
         input.invalidate_input()
@@ -267,6 +278,7 @@ function OnPausedChanged(is_paused, is_inventory_pause)
 end
 
 function OnModSettingsChanged()
+    overhead_icons.restore()
     status_visuals.restore()
     refresh_settings()
     terrain.reset()

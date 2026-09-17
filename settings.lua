@@ -31,7 +31,7 @@ local function smoothing_slider(id, gui, in_main_menu, im_id, setting)
         mod_setting_handle_change_callback(id, gui, in_main_menu, setting, value, new_value)
     end
 end
-mod_settings_version = 12
+mod_settings_version = 13
 mod_settings = {{
     id = "enabled",
     ui_name = "Rotate to match the ground",
@@ -44,6 +44,12 @@ mod_settings = {{
     value_default = true,
     ui_description = "Counter-rotate the player and polymorphed forms visually by the camera angle. Creature turning and controls stay native; gravity and projectile velocity are unchanged.",
     scope = MOD_SETTING_SCOPE_RUNTIME
+}, {
+    id = "rotate_status_indicators",
+    ui_name = "Rotate overhead status indicators",
+    value_default = true,
+    ui_description = "Safe-mod replacement for overhead stain and status icons. Keeps the native HUD and gameplay effects. Follows the upright-player setting; other creatures follow the world. Fully restart Noita after changing.",
+    scope = MOD_SETTING_SCOPE_RUNTIME_RESTART
 }, {
     id = "smoothing",
     ui_name = "Rotation smoothing",

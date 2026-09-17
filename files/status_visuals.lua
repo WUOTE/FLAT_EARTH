@@ -1,7 +1,8 @@
 -- World-space status symbols (hearts, confusion stars, berserk/protection
 -- particles) are emitted separately from the stained body. Compensate their
 -- spawn orientation and send emissive symbols through the rotated world.
--- UIIconComponent HUD flags and the HUD icon shader are intentionally untouched.
+-- Native overhead icons are handled separately by overhead_icons.lua.
+-- This particle module leaves UIIconComponent flags and HUD shaders untouched.
 local M = {}
 local owned = {}
 local prefix = "flat_earth_status_visual_"
