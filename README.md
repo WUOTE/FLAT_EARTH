@@ -40,4 +40,4 @@ Noita, and is not loaded by the mod. This is not an in-game visual test.
 
 In-game check: acquire wet/oiled/bloody stains, tilt both ways, toggle upright
 player, inspect the normal HUD, then test a status-bearing polymorph and a nearby
-stained enemy. Check a save/reload and inventory pause as well.
+stained enemy. Check a save/reload and inventory pause as well
