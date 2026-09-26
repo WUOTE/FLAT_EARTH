@@ -6,8 +6,7 @@ local render_pipeline = dofile_once(mod_path .. "files/render_pipeline.lua")
 local player_pose = dofile_once(mod_path .. "files/player_pose.lua")
 local input = dofile_once(mod_path .. "files/late_aim.lua")
 local status_visuals = dofile_once(mod_path .. "files/status_visuals.lua")
--- Native messages stay native. The overlay in files/recharge_text.lua is kept
--- for future custom UI, but this mod no longer loads or feeds messages to it.
+local recharge_text = dofile_once(mod_path .. "files/recharge_text.lua")
 
 local state = {
     ready = false,
@@ -89,15 +88,21 @@ local function find_player()
     end
     return nil
 end
-local function publish(player, angle)
+local function publish(player, angle, input_inactive)
+    if not geometry.finite(angle) then angle = 0 end
     publish_aim_mode()
-    GlobalsSetValue("FLAT_EARTH.active_player", tostring(player))
+    GlobalsSetValue("FLAT_EARTH.active_player", input_inactive and "0" or tostring(player))
     GlobalsSetValue("FLAT_EARTH.view_angle", tostring(angle))
     GlobalsSetValue("FLAT_EARTH.view_scale", tostring(state.view_scale))
     local x, y = EntityGetFirstHitboxCenter(player)
-    if x == nil then
+    if not geometry.finite(x) or not geometry.finite(y) then
         x, y = EntityGetTransform(player)
     end
+    -- A transient invalid hitbox/transform must not poison the render buffers.
+    if not geometry.finite(x) or not geometry.finite(y) then
+        x, y = GameGetCameraPos()
+    end
+    if not geometry.finite(x) or not geometry.finite(y) then return end
     GameSetCameraFree(true)
     GameSetCameraPos(x, y)
     GameSetPostFxParameter("FLAT_EARTH_rotation", math.cos(angle), math.sin(angle), state.view_scale, 1)
@@ -105,6 +110,7 @@ local function publish(player, angle)
 end
 
 local function release_camera()
+    recharge_text.clear()
     status_visuals.restore()
     input.release()
     GlobalsSetValue("FLAT_EARTH.active_player", "0")
@@ -116,6 +122,37 @@ local function release_camera()
     state.player = nil
     state.tracker = geometry.new_tracker()
     GameSetPostFxParameter("FLAT_EARTH_rotation", 1, 0, 0, 0)
+end
+
+-- Keep the EXISTING input eligibility rules above. A frozen/dazed body is
+-- not a controllable player, and must never be handed back to the input relay.
+-- Only hold its camera during that temporary loss; death/polymorph still release.
+local function hold_inactive_camera()
+    local player = state.player
+    if not state.owns_camera or not player or not EntityGetIsAlive(player) or
+        input.transition_pending(player) or
+        (not EntityHasTag(player, "player_unit") and not EntityHasTag(player, "polymorphed_player")) then
+        return false
+    end
+    local controls = EntityGetFirstComponentIncludingDisabled(player, "ControlsComponent")
+    if not controls then return false end
+    local incapacitated = GameGetGameEffectCount(player, "FROZEN") > 0 or
+        GameGetGameEffectCount(player, "ELECTROCUTION") > 0 or
+        GameGetGameEffectCount(player, "CONFUSION") > 0 or
+        (ComponentGetValue2(controls, "input_latency_frames") or 0) > 0
+    -- Do not reinterpret arbitrary disabled controls (another mod, a parked
+    -- form, etc.) as a status effect. This is only a temporary visual hold.
+    if not incapacitated then return false end
+    -- Do not accidentally follow a parked original body during transformation.
+    if not EntityHasTag(player, "polymorphed_player") then
+        for _, entity in ipairs(EntityGetWithTag("polymorphed_player") or {}) do
+            if EntityGetIsAlive(entity) then return false end
+        end
+    end
+    recharge_text.clear()
+    input.invalidate_input()
+    publish(player, state.tracker.angle, true) -- camera only; active_player = 0
+    return true
 end
 
 function OnModPostInit()
@@ -143,6 +180,18 @@ function OnModPostInit()
         print(state.error)
         return -- Never register larger bounds without the matching shader crop.
     end
+    -- Suppress the oversized native notice only when its replacement and the
+    -- matching coverage shaders can all be installed together.
+    local notice_files
+    notice_files, err = recharge_text.prepare(ModTextFileGetContent, state.view_scale)
+    if not notice_files then
+        state.error = "FLAT EARTH disabled: " .. tostring(err)
+        print(state.error)
+        return
+    end
+    for path, content in pairs(notice_files) do
+        files[path] = content
+    end
     if setting("route_world_sprites", true) then
         local patch = dofile_once(mod_path .. "files/world_sprite_patch.lua")
         local paths = dofile_once(mod_path .. "files/world_sprite_paths.lua")
@@ -160,6 +209,7 @@ function OnModPostInit()
     if extra_coverage then
         ModMagicNumbersFileAdd(bounds_path)
     end
+    recharge_text.configure(extra_coverage)
     state.ready = true
 end
 
@@ -186,6 +236,7 @@ function OnPlayerSpawned(player)
     if active_creature then
         return
     end
+    recharge_text.clear()
     input.recover(player)
     status_visuals.restore()
     status_visuals.recover(player)
@@ -205,8 +256,8 @@ function OnWorldPreUpdate()
     publish_aim_mode()
     local player = find_player()
     if not player then
-        release_camera();
-        return
+        if not hold_inactive_camera() then release_camera() end
+        return -- never prepare/forward input or force-fire on this branch
     end
     if player ~= state.player then
         OnPlayerSpawned(player)
@@ -229,8 +280,8 @@ function OnWorldPostUpdate()
     publish_aim_mode()
     local player = find_player()
     if not player then
-        release_camera();
-        return
+        if not hold_inactive_camera() then release_camera() end
+        return -- never prepare/forward input or force-fire on this branch
     end
     if player ~= state.player then
         OnPlayerSpawned(player)
@@ -244,6 +295,7 @@ function OnWorldPostUpdate()
     local angle = geometry.update_tracker(state.tracker, x, y, frame, grounded, ground_angle, opts)
     player_pose.apply(player, angle, setting("upright_player", true))
     publish(player, angle)
+    recharge_text.update(player, angle, state.view_scale)
 end
 
 function OnPausedChanged(is_paused, is_inventory_pause)
@@ -252,6 +304,7 @@ function OnPausedChanged(is_paused, is_inventory_pause)
     end
     refresh_settings()
     if is_paused then
+        recharge_text.clear()
         status_visuals.restore()
         input.restore();
         input.invalidate_input()

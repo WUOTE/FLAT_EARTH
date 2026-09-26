@@ -1,6 +1,24 @@
 dofile("data/scripts/lib/mod_settings.lua")
 local mod_id = "FLAT_EARTH"
-local smoothing = dofile("mods/FLAT_EARTH/files/smoothing.lua")
+-- Workshop settings run outside the gameplay mod-path loader. Keep this
+-- helper embedded so settings can load without a local mods/FLAT_EARTH copy.
+-- Keep the math/defaults in sync with files/smoothing.lua; values are seconds.
+local smoothing = {default = 0.2, min = 0, max = 2, step = 0.01, slider_max = 10000}
+local curve = 0.02
+local span = math.log(1 + smoothing.max / curve)
+function smoothing.clamp(seconds)
+    return math.max(smoothing.min, math.min(smoothing.max, tonumber(seconds) or smoothing.default))
+end
+function smoothing.to_slider(seconds)
+    return math.log(1 + smoothing.clamp(seconds) / curve) / span * smoothing.slider_max
+end
+function smoothing.from_slider(position)
+    local seconds = curve * (math.exp(math.max(0, math.min(smoothing.slider_max, position)) / smoothing.slider_max * span) - 1)
+    return smoothing.clamp(math.floor(seconds / smoothing.step + 0.5) * smoothing.step)
+end
+function smoothing.adjust(seconds, steps)
+    return smoothing.clamp(math.floor(smoothing.clamp(seconds) / smoothing.step + steps + 0.5) * smoothing.step)
+end
 
 local function smoothing_slider(id, gui, in_main_menu, im_id, setting)
     local key = mod_setting_get_id(id, setting)

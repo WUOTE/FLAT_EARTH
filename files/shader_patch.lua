@@ -3,10 +3,10 @@
 -- is cropped at a fixed scale, so camera tilt never changes visible zoom.
 -- Embedded in Lua: no unsupported .glsl asset for Noita's VFS to silently omit.
 local M = {}
-local marker = "// FLAT_EARTH_FRAGMENT_V5"
+local marker = "// FLAT_EARTH_FRAGMENT_V7"
 
 local declarations = [[
-// FLAT_EARTH_FRAGMENT_V5
+// FLAT_EARTH_FRAGMENT_V7
 uniform vec4 FLAT_EARTH_rotation;
 
 // Each source varying can use a DIFFERENT texture rectangle/scale. Its screen
@@ -23,7 +23,11 @@ local transform = [[
     vec2 sc_pixel = (tex_coord_ - vec2(0.5)) / sc_uv_per_pixel;
     float sc_c = 1.0;
     float sc_s = 0.0;
-    if (FLAT_EARTH_rotation.w > 0.5) {
+    // Positive range checks reject NaN/Inf too (GLSL 1.10 has no isnan).
+    // A stale/invalid custom uniform must not turn every texture read invalid.
+    float sc_rotation_length = dot(FLAT_EARTH_rotation.xy, FLAT_EARTH_rotation.xy);
+    if (FLAT_EARTH_rotation.w > 0.5
+        && sc_rotation_length > 0.999 && sc_rotation_length < 1.001) {
         sc_c = FLAT_EARTH_rotation.x;
         sc_s = FLAT_EARTH_rotation.y;
     }
@@ -41,7 +45,6 @@ local transform = [[
     vec2 sc_world_pos = sc_remap(world_pos, sc_pixel_offset);
     vec2 sc_tex_coord_skylight = sc_remap(tex_coord_skylight, sc_pixel_offset);
     vec2 sc_tex_coord_fogofwar = sc_remap(tex_coord_fogofwar, sc_pixel_offset);
-    vec2 sc_uv_shift = sc_tex_coord - sc_screen_uv;
 ]]
 
 local function replace_once(source, needle, replacement)
@@ -87,7 +90,9 @@ function M.build(fragment, render_scale, world_scale)
         return nil, "coverage changed while shader was loaded; fully restart Noita"
     end
     if fragment:find("// FLAT_EARTH_BEGIN", 1, true) or fragment:find("// FLAT_EARTH_FRAGMENT_V2", 1, true) or
-        fragment:find("// FLAT_EARTH_FRAGMENT_V3", 1, true) or fragment:find("// FLAT_EARTH_FRAGMENT_V4", 1, true) then
+        fragment:find("// FLAT_EARTH_FRAGMENT_V3", 1, true) or fragment:find("// FLAT_EARTH_FRAGMENT_V4", 1, true) or
+        fragment:find("// FLAT_EARTH_FRAGMENT_V5", 1, true) or
+        fragment:find("// FLAT_EARTH_FRAGMENT_V6", 1, true) then
         return nil, "old shader still loaded; fully restart Noita after updating the mod"
     end
     local first, last = fragment:find("void%s+main%s*%(%s*%)%s*{")
@@ -113,13 +118,22 @@ function M.build(fragment, render_scale, world_scale)
     if not body then
         return nil, err
     end
-    local replacements = { -- Dithering and damage/health vignettes stay in screen space. At zero
-    -- rotation and native coverage sc_uv_shift is zero (stock image).
+    -- Never reconstruct screen coordinates by subtracting the world UV shift
+    -- from tex_coord: refraction/status distortion has already changed it by
+    -- the time the vignettes run. Use the untouched screen varying directly.
+    local replacements = {
     {"tex_coord * noise_scale + noise_time", "sc_screen_uv * noise_scale + noise_time"},
-    {"length(tex_coord - vec2(0.5))", "length((tex_coord - sc_uv_shift) - vec2(0.5))"},
-    {"float a = length(tex_coord - vec2(0.5,0.5));", "float a = length((tex_coord - sc_uv_shift) - vec2(0.5,0.5));"},
+    {"length(tex_coord - vec2(0.5))", "length(sc_screen_uv - vec2(0.5))"},
+    {"float a = length(tex_coord - vec2(0.5,0.5));", "float a = length(sc_screen_uv - vec2(0.5,0.5));"},
     {"vec2( gl_TexCoord[0].x, - gl_TexCoord[0].y )", "vec2(sc_tex_coord.x, -sc_tex_coord.y)"},
-    {"vec2 tex_coord_debug = gl_TexCoord[0].xy;", "vec2 tex_coord_debug = sc_tex_coord;"}}
+    {"vec2 tex_coord_debug = gl_TexCoord[0].xy;", "vec2 tex_coord_debug = sc_tex_coord;"},
+    -- A darkened/tinted pixel can be negative before gamma. pow(negative,
+    -- fractional gamma) is undefined and can poison the subsequent overlays.
+    {"color = pow( color, gamma );", "color = pow( max(color, vec3(0.0)), gamma );"},
+    -- This stock vignette weight can exceed 1 by a large margin. Keep its
+    -- opaque black edges, but do not extrapolate a screen tint to negative RGB.
+    {"overlay_color_blindness.a * 0.5 + overlay_color_blindness.a * edge_dist*edge_dist * 40.0",
+     "clamp(overlay_color_blindness.a * (0.5 + edge_dist*edge_dist * 40.0), 0.0, 1.0)"}}
     for _, replacement in ipairs(replacements) do
         body, err = replace_once(body, replacement[1], replacement[2])
         if not body then
@@ -139,16 +153,16 @@ function M.build(fragment, render_scale, world_scale)
         end
         body = body:gsub("%f[%w_]" .. from .. "%f[^%w_]", to)
     end
-    local output = "gl_FragColor.rgb  = color;"
-    body, err = replace_once(body, output, [[
-    // Native-sized buffers have no picture outside their rectangle. Leave
-    // those corners black rather than zooming, stretching or smearing edges.
+    local screen_effects = "color = mix( color, vec3(1.0,0.0,0.0), damage_flash_interpolation * edge_dist * 0.7 );"
+    body, err = replace_once(body, screen_effects, [[
+    // Mask uncovered WORLD pixels before the screen-space effects, not after
+    // them. The coverage mask must never paint over status tints/vignettes.
     if ((abs(sc_s) > 0.000001 || abs(sc_c - 1.0) > 0.000001)
         && (sc_tex_coord.x < 0.0 || sc_tex_coord.x > 1.0
             || sc_tex_coord.y < 0.0 || sc_tex_coord.y > 1.0)) {
         color = vec3(0.0);
     }
-    ]] .. output)
+    ]] .. screen_effects)
     if not body then
         return nil, err
     end

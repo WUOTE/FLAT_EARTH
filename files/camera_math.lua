@@ -2,6 +2,10 @@
 local M = {}
 local pi = math.pi
 
+function M.finite(value)
+    return type(value) == "number" and value == value and value > -math.huge and value < math.huge
+end
+
 function M.clamp(value, low, high)
     return math.max(low, math.min(high, value))
 end
@@ -86,7 +90,15 @@ function M.reset_tracker(state, x, y, frame)
 end
 
 function M.update_tracker(state, x, y, frame, grounded, ground_angle, options)
-    if not state.frame then M.reset_tracker(state, x, y, frame) end
+    -- Invalid native samples can occur during entity/state transitions. Never
+    -- turn one bad sample into a permanent NaN camera angle (and black world).
+    if not M.finite(state.angle) then state.angle = 0 end
+    if not M.finite(state.target) then state.target = state.angle end
+    if not M.finite(x) or not M.finite(y) then return state.angle end
+    if ground_angle ~= nil and not M.finite(ground_angle) then ground_angle = nil end
+    if not state.frame or not M.finite(state.x) or not M.finite(state.y) then
+        M.reset_tracker(state, x, y, frame)
+    end
     local frame_delta = math.max(1, frame - state.frame)
     local dx, dy = x - state.x, y - state.y
     -- Teleports, new runs and long gaps must not be treated as travel slopes.

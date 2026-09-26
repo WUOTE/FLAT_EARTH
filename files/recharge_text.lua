@@ -6,7 +6,7 @@ local geometry = dofile_once("mods/FLAT_EARTH/files/camera_math.lua")
 local guard = dofile_once("mods/FLAT_EARTH/files/input_guard.lua")
 local M = {}
 local key = "flat_earth_log_recharging"
-local gui, owner, last_attempt
+local gui, owner, active_wand, last_attempt
 local active = false
 
 function M.prepare(read, scale)
@@ -40,7 +40,7 @@ function M.configure(enabled)
 end
 
 function M.clear()
-    owner, last_attempt = nil, nil
+    owner, active_wand, last_attempt = nil, nil, nil
     if gui then
         GuiDestroy(gui)
         gui = nil
@@ -70,6 +70,18 @@ function M.update(player, angle, scale)
         M.clear()
         return
     end
+    if active_wand ~= wand then
+        last_attempt = nil
+        active_wand = wand
+    end
+    -- Do not carry a notice over an item switch/throw before the inventory has
+    -- finished equipping the new wand.
+    local actual_item = ComponentGetValue2(inventory, "mActualActiveItem")
+    if (actual_item ~= nil and actual_item ~= wand) or
+        (ComponentGetValue2(inventory, "mThrowItem") or 0) ~= 0 then
+        M.clear()
+        return
+    end
     -- Read-only: match an attempted use while native reload is still pending.
     -- In particular, reloading by itself must not show a notice while idle.
     if ComponentGetValue2(controls, "mButtonDownFire") == true and
@@ -85,6 +97,10 @@ function M.update(player, angle, scale)
     GuiStartFrame(gui)
     local width, height = GuiGetScreenDimensions(gui)
     local _, _, world_width, world_height = GameGetCameraBounds()
+    if not world_width or world_width <= 0 or not world_height or world_height <= 0 then
+        M.clear()
+        return
+    end
     local px, py = EntityGetTransform(player)
     local cx, cy = GameGetCameraPos()
     local dx, dy = geometry.world_to_screen(px - cx, py - cy, angle, scale)
